@@ -1,3 +1,5 @@
+raise NotImplementedError()
+
 # Copyright 2024 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -58,7 +60,7 @@ from ..trainer.utils import (
     print_rich_table,
     truncate_response,
 )
-from .rloo_config import RLOOConfig
+from .sac_config import SACConfig
 from .utils import generate_model_card, get_comet_experiment_url, log_table_to_comet_experiment
 
 
@@ -69,11 +71,11 @@ INVALID_LOGPROB = 1.0
 
 
 class SACTrainer(Trainer):
-    _tag_names = ["trl", "rloo"]
+    _tag_names = ["trl", "sac"]
 
     def __init__(
         self,
-        config: RLOOConfig,
+        config: SACConfig,
         processing_class: Optional[
             Union[PreTrainedTokenizerBase, BaseImageProcessor, FeatureExtractionMixin, ProcessorMixin]
         ],
@@ -144,9 +146,7 @@ class SACTrainer(Trainer):
         self.local_seed = args.seed + accelerator.process_index * 100003  # Prime
         if args.num_sample_generations > 0:
             self.sample_generations_freq = max(1, args.num_total_batches // args.num_sample_generations)
-        self.local_dataloader_batch_size = exact_div(
-            args.local_batch_size, args.rloo_k, "`local_batch_size` must be a multiple of rloo_k"
-        )  # RLOO logic: needed because RLOO repeats the same prompt args.rloo_k times
+        self.local_dataloader_batch_size = args.local_batch_size
 
         #########
         # setup model, optimizer, and others
@@ -263,7 +263,7 @@ class SACTrainer(Trainer):
 
         accelerator.print("===training policy===")
         start_time = time.time()
-        stats_shape = (args.num_ppo_epochs, args.num_mini_batches, args.gradient_accumulation_steps)
+        stats_shape = (args.num_sac_epochs, args.num_mini_batches, args.gradient_accumulation_steps)
         approxkl_stats = torch.zeros(stats_shape, device=device)
         pg_clipfrac_stats = torch.zeros(stats_shape, device=device)
         pg_loss_stats = torch.zeros(stats_shape, device=device)
@@ -609,9 +609,9 @@ class SACTrainer(Trainer):
             tags=tags,
             wandb_url=wandb.run.get_url() if is_wandb_available() and wandb.run is not None else None,
             comet_url=get_comet_experiment_url(),
-            trainer_name="RLOO",
+            trainer_name="SAC",
             trainer_citation=citation,
-            paper_title="Back to Basics: Revisiting REINFORCE-Style Optimization for Learning from Human Feedback in LLMs",
+            paper_title="Back to Basics: Revisiting REINFORCE-Style Optimization for Learning from Human Feedback in LLMs", # Todo: change the paper reference
             paper_id="2402.14740",
         )
 

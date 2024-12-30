@@ -16,7 +16,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from ..trainer.utils import OnPolicyConfig
+from ..trainer.utils import OnPolicyConfig, EntropyRegularizer
 
 
 @dataclass
@@ -53,6 +53,9 @@ class PPOConfig(OnPolicyConfig):
             Discount factor.
         lam (`float`, *optional*, defaults to `0.95`):
             Lambda value for GAE.
+        entropy_regularizer (`Optional[EntropyRegularizer]`, *optional*, defaults to `None`):
+            Entropy regularizer for the policy. If provided, will be used to optimize temperature to keep the policy's entropy close to a target.
+            Can be configured with target_entropy, start_temperature, and optimizers.
     """
 
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
@@ -67,3 +70,4 @@ class PPOConfig(OnPolicyConfig):
     cliprange_value: float = 0.2
     gamma: float = 1.0
     lam: float = 0.95
+    entropy_regularizer: Optional[EntropyRegularizer] = None
