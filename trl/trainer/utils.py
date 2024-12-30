@@ -1481,3 +1481,75 @@ def log_table_to_comet_experiment(name: str, table: pd.DataFrame) -> None:
     experiment = comet_ml.get_running_experiment()
     if experiment is not None:
         experiment.log_table(tabular_data=table, filename=name)
+
+class EntropyRegularizer():
+    def __init__(self, target_entropy:float | None=None, start_temperature:float=.7, optimizers: tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None)):
+        
+        self.alpha = torch.tensor(start_temperature, requires_grad=True)
+        self.target_entropy = target_entropy
+        self.optimizer, self.lr_scheduler = optimizers
+        if target_entropy is not None and self.optimizer is None:
+            print("Warning: Temperature will not be optimized because no optimizer was provided.")
+        if self.optimizer is not None:
+            assert target_entropy is not None, "You cannot optimize temperature without a target_entropy."
+    
+    def temperature(self):
+        return self.alpha
+
+    def regularization(self, probs:torch.tensor) -> torch.tensor:
+        """Finds the entropy of the model's probability distribution.
+        To maximize entropy, subtract this from your model's loss each step. 
+        (minimizing negative entropy is maximizing entropy)
+        
+        Args:
+            probs (torch.tensor): The probability distribution over actions, typically from a softmax output
+            
+        Returns:
+            torch.tensor: A torch.Size([1]) tensor containing the entropy regularization term
+        """
+        return -self.alpha.detach() * (probs * torch.log(probs)).sum(dim=-1)
+    
+    def step(self, probs:torch.tensor) -> torch.tensor:
+        """Optimizes the temperature automatically.
+        
+        Args:
+            probs (torch.tensor): The probability distribution over actions, typically from a softmax output
+        """
+        J_alpha = (probs.detach() * (-self.alpha * (torch.log(probs.detach()) + self.target_entropy))).sum(dim=-1).mean()
+
+        if self.optimizer is not None:
+            self.optimizer.zero_grad()
+            J_alpha.backward()
+            self.optimizer.step()
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+        return J_alpha
+
+
+@dataclass
+class EntropyRegularizerConfig(TrainingArguments):
+    r"""
+    Configuration class for the EntropyRegularizer.
+
+    Using [`~transformers.HfArgumentParser`] we can turn this class into
+    [argparse](https://docs.python.org/3/library/argparse#module-argparse) arguments that can be specified on the
+    command line.
+
+    Parameters:
+        target_entropy (`Optional[float]`, *optional*, defaults to `None`):
+            Target entropy value for the policy. If provided, temperature will be optimized to keep entropy close to this value.
+        start_temperature (`float`, *optional*, defaults to `0.7`):
+            Initial temperature value for entropy regularization.
+        temperature_optimizer_lr (`float`, *optional*, defaults to `1e-4`):
+            Learning rate for the temperature optimizer.
+        temperature_optimizer_momentum (`float`, *optional*, defaults to `0.9`):
+            Momentum parameter for the temperature optimizer.
+        temperature_scheduler_gamma (`float`, *optional*, defaults to `0.99`):
+            Gamma parameter for the temperature learning rate scheduler.
+    """
+
+    target_entropy: Optional[float] = None
+    start_temperature: float = 0.7
+    temperature_optimizer_lr: float = 1e-4
+    temperature_optimizer_momentum: float = 0.9
+    temperature_scheduler_gamma: float = 0.99
