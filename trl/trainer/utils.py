@@ -1482,17 +1482,68 @@ def log_table_to_comet_experiment(name: str, table: pd.DataFrame) -> None:
     if experiment is not None:
         experiment.log_table(tabular_data=table, filename=name)
 
+
+@dataclass
+class EntropyRegularizerConfig():
+    r"""
+    Configuration class for the EntropyRegularizer.
+
+    Using [`~transformers.HfArgumentParser`] we can turn this class into
+    [argparse](https://docs.python.org/3/library/argparse#module-argparse) arguments that can be specified on the
+    command line.
+
+    Parameters:
+        target_entropy (`Optional[float]`, *optional*, defaults to `None`):
+            Target entropy value for the policy. If provided, temperature will be optimized to keep entropy close to this value.
+            The discrete sac paper uses 0.98 * (-log (1 / |A|)) https://arxiv.org/pdf/1910.07207
+        start_temperature (`float`, *optional*, defaults to `0.7`):
+            Initial temperature value for entropy regularization.
+        temperature_optimizer_lr (`float`, *optional*, defaults to `1e-4`):
+            Learning rate for the temperature optimizer.
+        temperature_optimizer_momentum (`float`, *optional*, defaults to `0.9`):
+            Momentum parameter for the temperature optimizer.
+        temperature_scheduler_gamma (`float`, *optional*, defaults to `0.99`):
+            Gamma parameter for the temperature learning rate scheduler.
+    """
+
+    target_entropy: Optional[float] = None
+    start_temperature: float = 0.7
+    temperature_optimizer_lr: float = 1e-4
+    temperature_optimizer_momentum: float = 0.9
+    temperature_scheduler_gamma: float = 0.99
+
 class EntropyRegularizer():
-    def __init__(self, target_entropy:float | None=None, start_temperature:float=.7, optimizers: tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None)):
+    def __init__(self, config: EntropyRegularizerConfig):
+        """Initialize the entropy regularizer with a configuration object.
         
-        self.alpha = torch.tensor(start_temperature, requires_grad=True)
-        self.target_entropy = target_entropy
-        self.optimizer, self.lr_scheduler = optimizers
-        if target_entropy is not None and self.optimizer is None:
-            print("Warning: Temperature will not be optimized because no optimizer was provided.")
-        if self.optimizer is not None:
-            assert target_entropy is not None, "You cannot optimize temperature without a target_entropy."
-    
+        Args:
+            config (EntropyRegularizerConfig): Configuration for the entropy regularizer containing:
+                - target_entropy: Target entropy value for the policy
+                - start_temperature: Initial temperature value
+                - temperature_optimizer_lr: Learning rate for temperature optimization
+                - temperature_optimizer_momentum: Momentum for temperature optimization
+                - temperature_scheduler_gamma: Gamma for temperature learning rate scheduler
+        """
+        # Create alpha as a nn.Parameter to properly track gradients
+        self.alpha = torch.nn.Parameter(torch.tensor(config.start_temperature))
+        self.target_entropy = config.target_entropy
+        
+        # Create optimizer and scheduler if target_entropy is provided
+        if config.target_entropy is not None:
+            self.optimizer = torch.optim.SGD(
+                [self.alpha],
+                lr=config.temperature_optimizer_lr,
+                momentum=config.temperature_optimizer_momentum
+            )
+            self.lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
+                self.optimizer,
+                gamma=config.temperature_scheduler_gamma
+            )
+        else:
+            self.optimizer = None
+            self.lr_scheduler = None
+            print("Warning: Temperature will not be optimized because no target_entropy was provided.")
+
     def temperature(self):
         return self.alpha
 
@@ -1515,6 +1566,9 @@ class EntropyRegularizer():
         Args:
             probs (torch.tensor): The probability distribution over actions, typically from a softmax output
         """
+        if self.target_entropy is None:
+            return None
+            
         J_alpha = (probs.detach() * (-self.alpha * (torch.log(probs.detach()) + self.target_entropy))).sum(dim=-1).mean()
 
         if self.optimizer is not None:
@@ -1525,31 +1579,3 @@ class EntropyRegularizer():
                 self.lr_scheduler.step()
         return J_alpha
 
-
-@dataclass
-class EntropyRegularizerConfig(TrainingArguments):
-    r"""
-    Configuration class for the EntropyRegularizer.
-
-    Using [`~transformers.HfArgumentParser`] we can turn this class into
-    [argparse](https://docs.python.org/3/library/argparse#module-argparse) arguments that can be specified on the
-    command line.
-
-    Parameters:
-        target_entropy (`Optional[float]`, *optional*, defaults to `None`):
-            Target entropy value for the policy. If provided, temperature will be optimized to keep entropy close to this value.
-        start_temperature (`float`, *optional*, defaults to `0.7`):
-            Initial temperature value for entropy regularization.
-        temperature_optimizer_lr (`float`, *optional*, defaults to `1e-4`):
-            Learning rate for the temperature optimizer.
-        temperature_optimizer_momentum (`float`, *optional*, defaults to `0.9`):
-            Momentum parameter for the temperature optimizer.
-        temperature_scheduler_gamma (`float`, *optional*, defaults to `0.99`):
-            Gamma parameter for the temperature learning rate scheduler.
-    """
-
-    target_entropy: Optional[float] = None
-    start_temperature: float = 0.7
-    temperature_optimizer_lr: float = 1e-4
-    temperature_optimizer_momentum: float = 0.9
-    temperature_scheduler_gamma: float = 0.99

@@ -30,6 +30,8 @@ from trl.trainer.utils import (
     generate_model_card,
     get_peft_config,
     pad,
+    EntropyRegularizerConfig,
+    EntropyRegularizer,
 )
 
 
@@ -404,3 +406,84 @@ class TestComputeAccuracy(unittest.TestCase):
             "These instances are ignored in the accuracy computation."
         )
         self.assertEqual(str(cm.warning), expected_warning)
+
+
+class TestEntropyRegularizer(unittest.TestCase):
+    def setUp(self):
+        self.target_entropy = 0.5
+        self.config = EntropyRegularizerConfig(
+            target_entropy=self.target_entropy,
+            start_temperature=0.7,
+            temperature_optimizer_lr=0.01,
+            temperature_optimizer_momentum=0.9,
+            temperature_scheduler_gamma=0.99
+        )
+        
+    def test_initialization(self):
+        # Test initialization without target entropy
+        config_no_target = EntropyRegularizerConfig(
+            target_entropy=None,
+            start_temperature=self.config.start_temperature
+        )
+        regularizer = EntropyRegularizer(config_no_target)
+        self.assertAlmostEqual(regularizer.alpha.item(), self.config.start_temperature)
+        self.assertIsNone(regularizer.target_entropy)
+        self.assertIsNone(regularizer.optimizer)
+        self.assertIsNone(regularizer.lr_scheduler)
+
+        # Test initialization with target entropy
+        regularizer = EntropyRegularizer(self.config)
+        self.assertAlmostEqual(regularizer.alpha.item(), self.config.start_temperature)
+        self.assertAlmostEqual(regularizer.target_entropy, self.target_entropy)
+        self.assertIsNotNone(regularizer.optimizer)
+        self.assertIsNotNone(regularizer.lr_scheduler)
+
+    def test_temperature(self):
+        regularizer = EntropyRegularizer(self.config)
+        self.assertAlmostEqual(regularizer.temperature().item(), self.config.start_temperature)
+
+    def test_regularization(self):
+        regularizer = EntropyRegularizer(self.config)
+        # Test with uniform distribution
+        probs = torch.tensor([[0.5, 0.5]])
+        expected_reg = -self.config.start_temperature * (-0.693147)  # -0.693147 is ln(2)
+        reg = regularizer.regularization(probs)
+        self.assertAlmostEqual(reg.item(), expected_reg, places=5)
+
+    def test_step(self):
+        regularizer = EntropyRegularizer(self.config)
+        
+        # Initial temperature
+        initial_temp = regularizer.temperature().item()
+        
+        # Perform a step with uniform distribution
+        probs = torch.tensor([[0.5, 0.5]], requires_grad=True)
+        J_alpha_0 = regularizer.step(probs)
+        J_alpha_1 = regularizer.step(probs)
+        
+        # Temperature should change after step
+        self.assertNotEqual(regularizer.temperature().item(), initial_temp)
+        self.assertLess(J_alpha_1, J_alpha_0)
+
+class TestEntropyRegularizerConfig(unittest.TestCase):
+    def test_default_values(self):
+        config = EntropyRegularizerConfig()
+        self.assertIsNone(config.target_entropy)
+        self.assertEqual(config.start_temperature, 0.7)
+        self.assertEqual(config.temperature_optimizer_lr, 1e-4)
+        self.assertEqual(config.temperature_optimizer_momentum, 0.9)
+        self.assertEqual(config.temperature_scheduler_gamma, 0.99)
+
+    def test_custom_values(self):
+        custom_config = EntropyRegularizerConfig(
+            target_entropy=0.5,
+            start_temperature=1.0,
+            temperature_optimizer_lr=0.001,
+            temperature_optimizer_momentum=0.8,
+            temperature_scheduler_gamma=0.95
+        )
+        self.assertEqual(custom_config.target_entropy, 0.5)
+        self.assertEqual(custom_config.start_temperature, 1.0)
+        self.assertEqual(custom_config.temperature_optimizer_lr, 0.001)
+        self.assertEqual(custom_config.temperature_optimizer_momentum, 0.8)
+        self.assertEqual(custom_config.temperature_scheduler_gamma, 0.95)
