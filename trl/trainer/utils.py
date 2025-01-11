@@ -1500,8 +1500,8 @@ class EntropyRegularizerConfig():
             Initial temperature value for entropy regularization.
         temperature_optimizer_lr (`float`, *optional*, defaults to `1e-4`):
             Learning rate for the temperature optimizer.
-        temperature_optimizer_momentum (`float`, *optional*, defaults to `0.9`):
-            Momentum parameter for the temperature optimizer.
+        # temperature_optimizer_momentum (`float`, *optional*, defaults to `0.9`):
+            # Momentum parameter for the temperature optimizer. Removed to keep things simple
         temperature_scheduler_gamma (`float`, *optional*, defaults to `0.99`):
             Gamma parameter for the temperature learning rate scheduler.
     """
@@ -1509,11 +1509,11 @@ class EntropyRegularizerConfig():
     target_entropy: Optional[float] = None
     start_temperature: float = 0.7
     temperature_optimizer_lr: float = 1e-4
-    temperature_optimizer_momentum: float = 0.9
+    # temperature_optimizer_momentum: float = 0.9
     temperature_scheduler_gamma: float = 0.99
 
 class EntropyRegularizer():
-    def __init__(self, config: EntropyRegularizerConfig):
+    def __init__(self, config: EntropyRegularizerConfig, device=torch.device("cpu")):
         """Initialize the entropy regularizer with a configuration object.
         
         Args:
@@ -1521,11 +1521,11 @@ class EntropyRegularizer():
                 - target_entropy: Target entropy value for the policy
                 - start_temperature: Initial temperature value
                 - temperature_optimizer_lr: Learning rate for temperature optimization
-                - temperature_optimizer_momentum: Momentum for temperature optimization
+                # - temperature_optimizer_momentum: Momentum for temperature optimization. Removed because let's keep it simple and also momentum might result in negative temperatures.
                 - temperature_scheduler_gamma: Gamma for temperature learning rate scheduler
         """
         # Create alpha as a nn.Parameter to properly track gradients
-        self.alpha = torch.nn.Parameter(torch.tensor(config.start_temperature))
+        self.alpha = torch.nn.Parameter(torch.tensor(config.start_temperature, device=device))
         self.target_entropy = config.target_entropy
         
         # Create optimizer and scheduler if target_entropy is provided
@@ -1533,7 +1533,7 @@ class EntropyRegularizer():
             self.optimizer = torch.optim.SGD(
                 [self.alpha],
                 lr=config.temperature_optimizer_lr,
-                momentum=config.temperature_optimizer_momentum
+                # momentum=config.temperature_optimizer_momentum
             )
             self.lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
                 self.optimizer,
@@ -1542,11 +1542,14 @@ class EntropyRegularizer():
         else:
             self.optimizer = None
             self.lr_scheduler = None
-            print("Warning: Temperature will not be optimized because no target_entropy was provided.")
+            warnings.warn("Warning: Temperature will not be optimized because no target_entropy was provided.", UserWarning)
 
     def temperature(self):
         return self.alpha
-
+    
+    def __float__(self):
+        return self.alpha.item()
+    
     def regularization(self, probs:torch.tensor) -> torch.tensor:
         """Finds the entropy of the model's probability distribution.
         To maximize entropy, subtract this from your model's loss each step. 

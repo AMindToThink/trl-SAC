@@ -67,6 +67,8 @@ from .utils import (
     prepare_deepspeed,
     print_rich_table,
     truncate_response,
+    EntropyRegularizer,
+    EntropyRegularizerConfig,
 )
 
 
@@ -133,7 +135,7 @@ class PPOTrainer(Trainer):
         self.args = args
         self.processing_class = processing_class
         self.policy_model = model
-
+        
         # Define the collator if not provided
         if data_collator is None:
             data_collator = DataCollatorWithPadding(self.processing_class)
@@ -353,9 +355,15 @@ class PPOTrainer(Trainer):
                 yield from dataloader
 
         iter_dataloader = iter(repeat_generator())
+        if self.args.entropy_regularizer_config is None:
+            temperature = args.temperature + 1e-7
+        else:
+            self.args.entropy_regularizer_config.start_temperature += 1e-7
+            temperature = EntropyRegularizer(self.args.entropy_regularizer_config, device=model.device)
+            
         generation_config = GenerationConfig(
             max_new_tokens=args.response_length,
-            temperature=(args.temperature + 1e-7),
+            temperature=float(temperature),
             top_k=0.0,
             top_p=1.0,
             do_sample=True,
@@ -439,7 +447,7 @@ class PPOTrainer(Trainer):
                     else:
                         ref_output = forward(ref_policy, query_response, processing_class.pad_token_id)
                     ref_logits = ref_output.logits[:, context_length - 1 : -1]
-                    ref_logits /= args.temperature + 1e-7
+                    ref_logits /= float(temperature) + 1e-7
                     ref_all_logprob = F.log_softmax(ref_logits, dim=-1)
                     ref_logprob = torch.gather(ref_all_logprob, 2, response.unsqueeze(-1)).squeeze(-1)
                     del ref_output, ref_logits, ref_all_logprob
@@ -547,7 +555,7 @@ class PPOTrainer(Trainer):
 
                             output, vpred_temp = forward(model, mb_query_responses, processing_class.pad_token_id)
                             logits = output.logits[:, context_length - 1 : -1]
-                            logits /= args.temperature + 1e-7
+                            logits /= float(temperature) + 1e-7
                             new_all_logprobs = F.log_softmax(logits, dim=-1)
                             new_logprobs = torch.gather(new_all_logprobs, 2, mb_responses.unsqueeze(-1)).squeeze(-1)
                             new_logprobs = torch.masked_fill(
@@ -573,10 +581,18 @@ class PPOTrainer(Trainer):
                             pg_losses2 = -mb_advantage * torch.clamp(ratio, 1.0 - args.cliprange, 1.0 + args.cliprange)
                             pg_loss_max = torch.max(pg_losses, pg_losses2)
                             pg_loss = masked_mean(pg_loss_max, ~padding_mask[micro_batch_inds])
-                            loss = pg_loss + args.vf_coef * vf_loss
+                            entropy_loss = -temperature.regularization(mb_logprobs) if type(temperature) is EntropyRegularizer else 0.0
+                            loss = pg_loss + args.vf_coef * vf_loss + entropy_loss
                             accelerator.backward(loss)
                             optimizer.step()
                             optimizer.zero_grad()
+
+                            
+                            if type(temperature) is EntropyRegularizer:
+                                # alpha is the name for temperature in papers on SAC. J refers to loss functions. J_alpha is therefore the loss for the temperature parameter.
+                                J_alpha = temperature.step(mb_logprobs)
+                                generation_config.temperature = float(temperature)
+
                             with torch.no_grad():
                                 pg_clipfrac = masked_mean(
                                     (pg_losses2 > pg_losses).float(), ~padding_mask[micro_batch_inds]
@@ -624,6 +640,8 @@ class PPOTrainer(Trainer):
                 metrics["policy/clipfrac_avg"] = self.accelerator.gather(pg_clipfrac_stats).mean().item()
                 metrics["loss/policy_avg"] = self.accelerator.gather(pg_loss_stats).mean().item()
                 metrics["loss/value_avg"] = self.accelerator.gather(vf_loss_stats).mean().item()
+                metrics["loss/entropy"] = entropy_loss.item() if entropy_loss != 0.0 else 0
+                metrics["loss/J_alpha"] = J_alpha.item() if type(temperature) is EntropyRegularizer else 0.0
                 metrics["val/clipfrac_avg"] = self.accelerator.gather(vf_clipfrac_stats).mean().item()
                 metrics["policy/entropy_avg"] = self.accelerator.gather(entropy_stats).mean().item()
                 metrics["val/ratio"] = self.accelerator.gather(ratio_stats).mean().item()
