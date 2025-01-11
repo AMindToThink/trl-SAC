@@ -21,7 +21,7 @@ from transformers import AutoModelForCausalLM, AutoModelForSequenceClassificatio
 from transformers.testing_utils import require_peft
 
 from trl import PPOConfig, PPOTrainer
-from trl.trainer.utils import SIMPLE_CHAT_TEMPLATE
+from trl.trainer.utils import SIMPLE_CHAT_TEMPLATE, EntropyRegularizerConfig
 
 
 class TestPPOTrainer(unittest.TestCase):
@@ -222,3 +222,76 @@ class TestPPOTrainer(unittest.TestCase):
 
             self.assertTrue(critic_weights_updated, "Critic weights were not updated during training")
             self.assertTrue(policy_weights_updated, "Policy weights were not updated during training")
+    def test_with_entropy_regularizer(self):
+        """Test basic PPO training configuration and verify model updates."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Capture initial weights
+            initial_critic_weights = {}
+            initial_policy_weights = {}
+            for name, param in self.value_model.named_parameters():
+                initial_critic_weights[name] = param.clone().detach()
+            for name, param in self.model.named_parameters():
+                initial_policy_weights[name] = param.clone().detach()
+
+            # Maximum entropy is -log(1/vocab_size) = log(vocab_size)
+            max_entropy = torch.log(torch.tensor(self.tokenizer.vocab_size)).item()
+            entropy_configs = {\
+                "Entropy Config = None" : None,\
+                "Entropy Config with no target" : EntropyRegularizerConfig(),\
+                "Entropy Config with max entropy target" : EntropyRegularizerConfig(target_entropy=max_entropy)\
+            }
+            def basic_training_with_config(entropy_config_name, entropy_regularizer_config):
+                training_args = PPOConfig(
+                    output_dir=tmp_dir,
+                    per_device_train_batch_size=4,
+                    per_device_eval_batch_size=2,
+                    report_to="none",
+                    missing_eos_penalty=1.0,
+                    vf_coef=1.0,  # Increase value function coefficient
+                    num_ppo_epochs=4,  # Increase number of PPO epochs
+                    entropy_regularizer_config=entropy_regularizer_config,
+                )
+
+                # Create trainer
+                trainer = PPOTrainer(
+                    args=training_args,
+                    processing_class=self.tokenizer,
+                    model=self.model,
+                    ref_model=self.ref_model,
+                    reward_model=self.reward_model,
+                    value_model=self.value_model,
+                    train_dataset=self.raw_dataset["train"],
+                    eval_dataset=self.raw_dataset["test"],
+                )
+
+                # Train
+                trainer.train()
+
+                # Check if critic weights have been updated
+                critic_weights_updated = False
+                for name, param in trainer.model.value_model.named_parameters():
+                    if not torch.allclose(initial_critic_weights[name], param.to("cpu")):
+                        critic_weights_updated = True
+                        break
+
+                # Check if policy weights have been updated
+                policy_weights_updated = False
+                for name, param in trainer.model.policy.named_parameters():
+                    if not torch.allclose(initial_policy_weights[name], param.to("cpu")):
+                        policy_weights_updated = True
+                        break
+                
+                self.assertTrue(critic_weights_updated, f"{entropy_config_name}'s Critic weights were not updated during training")
+                self.assertTrue(policy_weights_updated, f"{entropy_config_name}'s Policy weights were not updated during training")
+                return trainer
+            
+            config_trainers = {entropy_config_name:basic_training_with_config(entropy_config_name, entropy_config) for entropy_config_name, entropy_config in entropy_configs.items()}
+            self.assertTrue(torch.allclose(torch.tensor(config_trainers['Entropy Config = None'].temperature), torch.tensor(EntropyRegularizerConfig().start_temperature + 1e-7)), "'Entropy Config = None' but temperature changed anyways")
+            self.assertTrue(torch.allclose(torch.tensor(config_trainers["Entropy Config with no target"].temperature), torch.tensor(EntropyRegularizerConfig().start_temperature + 1e-7)), '"Entropy Config with no target" but temperature changed anyways')
+            self.assertFalse(torch.allclose(torch.tensor(config_trainers["Entropy Config with max entropy target"].temperature), torch.tensor(EntropyRegularizerConfig().start_temperature + 1e-7)), '"Entropy Config has target" but temperature didn\'t change')
+
+ 
+
+                
+
+

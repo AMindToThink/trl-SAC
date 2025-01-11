@@ -356,14 +356,14 @@ class PPOTrainer(Trainer):
 
         iter_dataloader = iter(repeat_generator())
         if self.args.entropy_regularizer_config is None:
-            temperature = args.temperature + 1e-7
+            self.temperature = args.temperature + 1e-7
         else:
             self.args.entropy_regularizer_config.start_temperature += 1e-7
-            temperature = EntropyRegularizer(self.args.entropy_regularizer_config, device=model.device)
+            self.temperature = EntropyRegularizer(self.args.entropy_regularizer_config, device=device)
             
         generation_config = GenerationConfig(
             max_new_tokens=args.response_length,
-            temperature=float(temperature),
+            temperature=float(self.temperature),
             top_k=0.0,
             top_p=1.0,
             do_sample=True,
@@ -447,7 +447,7 @@ class PPOTrainer(Trainer):
                     else:
                         ref_output = forward(ref_policy, query_response, processing_class.pad_token_id)
                     ref_logits = ref_output.logits[:, context_length - 1 : -1]
-                    ref_logits /= float(temperature) + 1e-7
+                    ref_logits /= float(self.temperature) + 1e-7
                     ref_all_logprob = F.log_softmax(ref_logits, dim=-1)
                     ref_logprob = torch.gather(ref_all_logprob, 2, response.unsqueeze(-1)).squeeze(-1)
                     del ref_output, ref_logits, ref_all_logprob
@@ -507,9 +507,15 @@ class PPOTrainer(Trainer):
                 values = torch.masked_fill(values, padding_mask_p1, 0)
 
                 # 4. compute rewards
+                # 4.1
                 kl = logprobs - ref_logprobs
                 non_score_reward = -args.kl_coef * kl
                 rewards = non_score_reward.clone()
+
+
+                entropy_loss = -self.temperature.regularization(prob_dist) if type(self.temperature) is EntropyRegularizer else 0.0
+                rewards += entropy_loss
+
                 actual_start = torch.arange(rewards.size(0), device=rewards.device)
                 actual_end = torch.where(sequence_lengths_p1 < rewards.size(1), sequence_lengths_p1, sequence_lengths)
                 rewards[[actual_start, actual_end]] += scores
@@ -555,7 +561,7 @@ class PPOTrainer(Trainer):
 
                             output, vpred_temp = forward(model, mb_query_responses, processing_class.pad_token_id)
                             logits = output.logits[:, context_length - 1 : -1]
-                            logits /= float(temperature) + 1e-7
+                            logits /= float(self.temperature) + 1e-7
                             new_all_logprobs = F.log_softmax(logits, dim=-1)
                             new_logprobs = torch.gather(new_all_logprobs, 2, mb_responses.unsqueeze(-1)).squeeze(-1)
                             new_logprobs = torch.masked_fill(
@@ -581,23 +587,23 @@ class PPOTrainer(Trainer):
                             pg_losses2 = -mb_advantage * torch.clamp(ratio, 1.0 - args.cliprange, 1.0 + args.cliprange)
                             pg_loss_max = torch.max(pg_losses, pg_losses2)
                             pg_loss = masked_mean(pg_loss_max, ~padding_mask[micro_batch_inds])
-                            entropy_loss = -temperature.regularization(mb_logprobs) if type(temperature) is EntropyRegularizer else 0.0
-                            loss = pg_loss + args.vf_coef * vf_loss + entropy_loss
+                            loss = pg_loss + args.vf_coef * vf_loss
                             accelerator.backward(loss)
                             optimizer.step()
                             optimizer.zero_grad()
 
                             
-                            if type(temperature) is EntropyRegularizer:
+                            if type(self.temperature) is EntropyRegularizer:
                                 # alpha is the name for temperature in papers on SAC. J refers to loss functions. J_alpha is therefore the loss for the temperature parameter.
-                                J_alpha = temperature.step(mb_logprobs)
-                                generation_config.temperature = float(temperature)
+                                J_alpha = self.temperature.step(mb_logprobs)
+                                generation_config.temperature = float(self.temperature)
 
                             with torch.no_grad():
+                                prob_dist = torch.nn.functional.softmax(logits, dim=-1)
+
                                 pg_clipfrac = masked_mean(
                                     (pg_losses2 > pg_losses).float(), ~padding_mask[micro_batch_inds]
                                 )
-                                prob_dist = torch.nn.functional.softmax(logits, dim=-1)
                                 entropy = torch.logsumexp(logits, dim=-1) - torch.sum(prob_dist * logits, dim=-1)
                                 approxkl = 0.5 * (logprobs_diff**2).mean()
                                 approxkl_stats[ppo_epoch_idx, minibatch_idx, gradient_accumulation_idx] = approxkl
@@ -641,7 +647,7 @@ class PPOTrainer(Trainer):
                 metrics["loss/policy_avg"] = self.accelerator.gather(pg_loss_stats).mean().item()
                 metrics["loss/value_avg"] = self.accelerator.gather(vf_loss_stats).mean().item()
                 metrics["loss/entropy"] = entropy_loss.item() if entropy_loss != 0.0 else 0
-                metrics["loss/J_alpha"] = J_alpha.item() if type(temperature) is EntropyRegularizer else 0.0
+                metrics["loss/J_alpha"] = J_alpha.item() if type(self.temperature) is EntropyRegularizer else 0.0
                 metrics["val/clipfrac_avg"] = self.accelerator.gather(vf_clipfrac_stats).mean().item()
                 metrics["policy/entropy_avg"] = self.accelerator.gather(entropy_stats).mean().item()
                 metrics["val/ratio"] = self.accelerator.gather(ratio_stats).mean().item()
