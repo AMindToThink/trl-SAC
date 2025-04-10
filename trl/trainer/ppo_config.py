@@ -1,4 +1,4 @@
-# Copyright 2025 The HuggingFace Team. All rights reserved.
+# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,8 +43,11 @@ class PPOConfig(OnPolicyConfig):
             Whether to whiten the rewards.
         kl_coef (`float`, *optional*, defaults to `0.05`):
             KL coefficient.
-        kl_estimator (Literal["k1", "k3"], *optional*, defaults to `k1`):
-            Which estimator for KL-Divergence to use from [Approximating KL Divergence](http://joschu.net/blog/kl-approx.html). Defaults to "k1", a straightforward, unbiased estimator. Can be set to "k3", an unbiased estimator with lower variance which "appears to be a strictly better estimator." Cannot be set to "k2", as it is used for logging purposes.
+        kl_estimator (`Literal["k1", "k3"]`, *optional*, defaults to `"k1"`):
+            Which estimator for KL-Divergence to use from [Approximating KL Divergence](http://joschu.net/blog/kl-approx.html).
+            Defaults to "k1", a straightforward, unbiased estimator. Can be set to "k3", an unbiased estimator with
+            lower variance which "appears to be a strictly better estimator". Cannot be set to "k2", as it is used for
+            logging purposes.
         cliprange (`float`, *optional*, defaults to `0.2`):
             Clip range.
         vf_coef (`float`, *optional*, defaults to `0.1`):
@@ -92,7 +95,10 @@ class PPOConfig(OnPolicyConfig):
     kl_estimator: Literal["k1", "k3"] = field(
         default="k1",
         metadata={
-            "help": "Which estimator for KL-Divergence to use - either 'k1' (straightforward, unbiased) or 'k3' (lower variance, unbiased, appears to be a strictly better estimator)."
+            "help": "Which estimator for KL-Divergence to use from Approximating KL Divergence "
+            "(http://joschu.net/blog/kl-approx.html). Defaults to 'k1', a straightforward, unbiased estimator. Can be "
+            "set to 'k3', an unbiased estimator with lower variance which 'appears to be a strictly better "
+            "estimator'. Cannot be set to 'k2', as it is used for logging purposes."
         },
     )
     cliprange: float = field(
