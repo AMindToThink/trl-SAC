@@ -334,13 +334,14 @@ class PPOTrainer(Trainer):
         if self.is_deepspeed_enabled:
             backup_deepspeed = self.deepspeed
             self.deepspeed = self.model
+        try:
+            super().save_model(output_dir, _internal_call)
+        finally:
+            self.model = backup_model
+            if self.is_deepspeed_enabled:
+                self.deepspeed = backup_deepspeed
 
-        super().save_model(output_dir, _internal_call)
-
-        self.model = backup_model
-
-        if self.is_deepspeed_enabled:
-            self.deepspeed = backup_deepspeed
+        
 
     def train(self):
         args = self.args
