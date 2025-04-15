@@ -341,7 +341,7 @@ class PPOTrainer(Trainer):
         if self.is_deepspeed_enabled:
             backup_deepspeed = self.deepspeed
             self.deepspeed = self.model
-        policy_output_dir = output_dir if not self.args.save_value_model else os.path.join(output_dir, "policy_model")
+        policy_output_dir = output_dir # if not self.args.save_value_model else os.path.join(output_dir, "policy_model")
         super().save_model(policy_output_dir, _internal_call)
 
         self.model = backup_model
