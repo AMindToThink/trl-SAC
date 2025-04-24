@@ -13,20 +13,24 @@
 # limitations under the License.
 
 from typing import Optional
+from collections.abc import Callable 
 
 import torch
+from torch import Tensor
+from torch.utils.data import DataLoader
 from datasets import Dataset
 from ExIt_config import ExItConfig
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    DataCollatorWithPadding,
-    Trainer,
-)
+from transformers.models.auto.modeling_auto import AutoModelForCausalLM
+from transformers.models.auto.tokenization_auto import AutoTokenizer
+from transformers.data.data_collator import DataCollatorWithPadding
+from transformers.trainer import Trainer
+from transformers.training_args import TrainingArguments
+from trl import SFTTrainer
 from transformers.generation.configuration_utils import GenerationConfig
+from datasets import load_dataset
 
 def rejection_sampling_generate_maker(generation_filter, keep_surplus=False):
     def apprentice_to_generate(apprentice):
@@ -98,26 +102,132 @@ class RejectionSamplingExpert:
 #     def generate(self, **kwargs):
 
 class ExItTrainer(Trainer):
-    def __init__(self, args:ExItConfig, train_dataset: Dataset, apprentice: nn.Module, expert_generate_maker,
-        data_collator: Optional[DataCollatorWithPadding] = None):
+    def __init__(
+            self, 
+            args:ExItConfig,
+            train_dataset: Dataset,
+            apprentice: nn.Module,
+            expert_generate_maker:Callable[[nn.Module], Callable[[GenerationConfig], Tensor]],
+            tokenizer,
+            data_collator: Optional[DataCollatorWithPadding] = None
+    ) -> None:
         # expert_generate_maker must be a higher-order function which takes a policy (an `apprentice` model) and returns a function which has the same interface as `generate`
+        super().__init__(model=apprentice)
         self.args = args
         self.apprentice = apprentice
         self.expert_generate_maker = expert_generate_maker
+        self.train_dataset = train_dataset
+        self.data_collator = data_collator
+        self.tokenizer = tokenizer
+        self.dataloader = DataLoader(
+            train_dataset,
+            batch_size=self.args.expert_batch_size,
+            shuffle=True,
+            collate_fn=self.data_collator,
+            drop_last=True, # needed; otherwise the last batch will be of ragged shape
+        )
 
     def train(self):
-        for _it in range(self.args.num_expert_iteration_epochs):
-            pass
+        for it in range(self.args.num_expert_iteration_epochs):
+            expert_pairs = []
+            for expert_batch in self.dataloader:
+                expert_generate = self.expert_generate_maker(self.apprentice)
+                expert_completions = expert_generate(self.args.expert_generation_config, **expert_batch)
+                text_completions = self.tokenizer.batch_decode(
+                    expert_completions, skip_special_tokens=True
+                )
+                
+                # Create prompt+completion pairs
+                for i, completion in enumerate(text_completions):
+                    prompt = self.tokenizer.decode(expert_batch["input_ids"][i], skip_special_tokens=True)
+                    expert_pairs.append({"text": prompt + completion})
+            
+            # Build dataset for this round
+            ds_round = Dataset.from_list(expert_pairs)
+            
+            # Train with SFTTrainer
+            training_args = TrainingArguments(
+                output_dir=f"exit_round_{it}",
+                per_device_train_batch_size=self.args.per_device_train_batch_size,
+                learning_rate=self.args.learning_rate,
+                num_train_epochs=1,
+                logging_steps=20,
+                save_strategy="no"
+            )
+            
+            # The SFTTrainer from trl has different parameters
+            sft_trainer = SFTTrainer(
+                model=self.apprentice,
+                tokenizer=self.tokenizer,
+                train_dataset=ds_round,
+                args=training_args,
+                max_seq_length=512
+            )
+            
+            sft_trainer.train()
+            self.apprentice = sft_trainer.model
+            
+            # Save checkpoint
+            self.apprentice.save_pretrained(f"./checkpoints/exit_iter_{it}")
 
 
 if __name__ == '__main__':
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B")
-    model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-0.5B").to('cuda')
+    from ExIt_config import ExItConfig
+    
+    # Load model and tokenizer
+    BASE_MODEL = "Qwen/Qwen2.5-0.5B"
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+    model = AutoModelForCausalLM.from_pretrained(BASE_MODEL).to('cuda')
+    
+    # Simple completion filter
     def length_condition(x):
         return len(tokenizer.decode(x)) > 30
-    def matthew_condition(x):
-        return "Matt" in tokenizer.decode(x)
-    rse = RejectionSamplingExpert(model=model, condition=matthew_condition)
-    input_ids = tokenizer("Some names which start with M are Mark,", return_tensors='pt').to('cuda')
-    results = rse.generate_surplus(tokenizer=tokenizer, num_return_sequences=2, max_new_tokens=30, **input_ids)
-    string_results = tokenizer.batch_decode(results)
+    
+    # Create rejection sampling generate function
+    rs_generate_maker = rejection_sampling_generate_maker(
+        generation_filter=lambda ids: [row for row in ids if length_condition(row)]
+    )
+    
+    # Load a small dataset
+    dataset = load_dataset("gsm8k", "main", split="train[:5]")
+    
+    # Prepare dataset and convert to the correct format
+    def format_example(example):
+        return {"text": example["question"] + "\n\n###\n"}
+    
+    formatted_dataset = dataset.map(format_example)
+    train_dataset = Dataset.from_dict({
+        "text": formatted_dataset["text"],
+        "input_ids": tokenizer(formatted_dataset["text"], return_tensors="pt", padding=True)["input_ids"]
+    })
+    
+    # Create data collator
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+    
+    # Create config
+    config = ExItConfig(
+        num_expert_iteration_epochs=2,
+        expert_batch_size=2,
+        per_device_train_batch_size=2,
+        learning_rate=2e-5,
+        expert_generation_config=GenerationConfig(
+            do_sample=True,
+            top_p=0.95,
+            temperature=0.7,
+            max_new_tokens=256,
+            num_return_sequences=4
+        )
+    )
+    
+    # Create trainer
+    trainer = ExItTrainer(
+        args=config,
+        train_dataset=train_dataset,
+        apprentice=model,
+        expert_generate_maker=rs_generate_maker,
+        tokenizer=tokenizer,
+        data_collator=data_collator
+    )
+    
+    # Train
+    trainer.train()

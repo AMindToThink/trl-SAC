@@ -38,6 +38,8 @@ class ExItConfig(TrainingArguments):
             Number of epochs to train.
         expert_generation_config (`GenerationConfig`, *optional*, defaults to GenerationConfig(do_sample=True, top_p=0.95, temperature=0.7, max_new_tokens=256, num_return_sequences=8)):
             Determines how samples are taken from the expert, and how many are taken per prompt (through num_return_sequences).
+        expert_batch_size (`int`, *optional*, defaults to `50`):
+            How many samples from the expert to train on. (TODO: Find better value)
         # ds3_gather_for_generation (`bool`, *optional*, defaults to `True`):
         #     This setting applies to DeepSpeed ZeRO-3. If enabled, the policy model weights are gathered for generation,
         #     improving generation speed. However, disabling this option allows training models that exceed the VRAM
@@ -64,6 +66,10 @@ class ExItConfig(TrainingArguments):
         metadata={
             "help": "Determines how samples are taken from the expert, and how many are taken per prompt (through num_return_sequences)."
         },
+    )
+    expert_batch_size: int = field(
+        default=50,
+        metadata={"help": "How many samples from the expert to train on. (TODO: Find better value)"},
     )
 
     # TODO: Deal with this
