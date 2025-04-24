@@ -17,10 +17,11 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 from ..trainer.utils import OnPolicyConfig
-
+from transformers.training_args import TrainingArguments
+from transformers.generation.configuration_utils import GenerationConfig
 
 @dataclass
-class PPOConfig(OnPolicyConfig):
+class ExItConfig(TrainingArguments):
     r"""
     Configuration class for the [`PPOTrainer`].
 
@@ -31,101 +32,48 @@ class PPOConfig(OnPolicyConfig):
     Parameters:
         exp_name (`str`, *optional*, defaults to `os.path.basename(__file__)[:-3]`):
             Name of this experiment.
-        reward_model_path (`str`, *optional*, defaults to `"EleutherAI/pythia-160m"`):
-            Path to the reward model.
         model_adapter_name (`str` or `None`, *optional*, defaults to `None`):
             Name of the train target PEFT adapter, when using LoRA with multiple adapters.
-        ref_adapter_name (`str` or `None`, *optional*, defaults to `None`):
-            Name of the reference PEFT adapter, when using LoRA with multiple adapters.
-        num_ppo_epochs (`int`, *optional*, defaults to `4`):
+        num_expert_iteration_epochs (`int`, *optional*, defaults to `4`):
             Number of epochs to train.
-        whiten_rewards (`bool`, *optional*, defaults to `False`):
-            Whether to whiten the rewards.
-        kl_coef (`float`, *optional*, defaults to `0.05`):
-            KL coefficient.
-        kl_estimator (`Literal["k1", "k3"]`, *optional*, defaults to `"k1"`):
-            Which estimator for KL-Divergence to use from [Approximating KL Divergence](http://joschu.net/blog/kl-approx.html).
-            Defaults to "k1", a straightforward, unbiased estimator. Can be set to "k3", an unbiased estimator with
-            lower variance which "appears to be a strictly better estimator". Cannot be set to "k2", as it is used for
-            logging purposes.
-        cliprange (`float`, *optional*, defaults to `0.2`):
-            Clip range.
-        vf_coef (`float`, *optional*, defaults to `0.1`):
-            Value function coefficient.
-        cliprange_value (`float`, *optional*, defaults to `0.2`):
-            Clip range for the value function.
-        gamma (`float`, *optional*, defaults to `1.0`):
-            Discount factor.
-        lam (`float`, *optional*, defaults to `0.95`):
-            Lambda value for GAE.
-        ds3_gather_for_generation (`bool`, *optional*, defaults to `True`):
-            This setting applies to DeepSpeed ZeRO-3. If enabled, the policy model weights are gathered for generation,
-            improving generation speed. However, disabling this option allows training models that exceed the VRAM
-            capacity of a single GPU, albeit at the cost of slower generation.
+        expert_generation_config (`GenerationConfig`, *optional*, defaults to GenerationConfig(do_sample=True, top_p=0.95, temperature=0.7, max_new_tokens=256, num_return_sequences=8)):
+            Determines how samples are taken from the expert, and how many are taken per prompt (through num_return_sequences).
+        # ds3_gather_for_generation (`bool`, *optional*, defaults to `True`):
+        #     This setting applies to DeepSpeed ZeRO-3. If enabled, the policy model weights are gathered for generation,
+        #     improving generation speed. However, disabling this option allows training models that exceed the VRAM
+        #     capacity of a single GPU, albeit at the cost of slower generation.
     """
 
     exp_name: str = field(
         default=os.path.basename(__file__)[:-3],
         metadata={"help": "Name of this experiment."},
     )
-    reward_model_path: str = field(
-        default="EleutherAI/pythia-160m",
-        metadata={"help": "Path to the reward model."},
-    )
     model_adapter_name: Optional[str] = field(
         default=None,
         metadata={"help": "Name of the train target PEFT adapter, when using LoRA with multiple adapters."},
     )
-    ref_adapter_name: Optional[str] = field(
-        default=None,
-        metadata={"help": "Name of the reference PEFT adapter, when using LoRA with multiple adapters."},
-    )
-    num_ppo_epochs: int = field(
+    num_expert_iteration_epochs: int = field(
         default=4,
-        metadata={"help": "Number of epochs to train."},
+        metadata={"help": "Number of epochs to train, sampling from the expert and training the apprentice."},
     )
-    whiten_rewards: bool = field(
-        default=False,
-        metadata={"help": "Whether to whiten the rewards."},
+    
+    expert_generation_config: GenerationConfig = field(
+        default_factory=lambda: GenerationConfig(
+            do_sample=True,
+            top_p=0.95,
+            temperature=0.7,
+            max_new_tokens=256,
+            num_return_sequences=8
+        ),
+        metadata={"help": "Determines how samples are taken from the expert, and how many are taken per prompt (through num_return_sequences)."},
     )
-    kl_coef: float = field(
-        default=0.05,
-        metadata={"help": "KL coefficient."},
-    )
-    kl_estimator: Literal["k1", "k3"] = field(
-        default="k1",
-        metadata={
-            "help": "Which estimator for KL-Divergence to use from Approximating KL Divergence "
-            "(http://joschu.net/blog/kl-approx.html). Defaults to 'k1', a straightforward, unbiased estimator. Can be "
-            "set to 'k3', an unbiased estimator with lower variance which 'appears to be a strictly better "
-            "estimator'. Cannot be set to 'k2', as it is used for logging purposes."
-        },
-    )
-    cliprange: float = field(
-        default=0.2,
-        metadata={"help": "Clip range."},
-    )
-    vf_coef: float = field(
-        default=0.1,
-        metadata={"help": "Value function coefficient."},
-    )
-    cliprange_value: float = field(
-        default=0.2,
-        metadata={"help": "Clip range for the value function."},
-    )
-    gamma: float = field(
-        default=1.0,
-        metadata={"help": "Discount factor."},
-    )
-    lam: float = field(
-        default=0.95,
-        metadata={"help": "Lambda value for GAE."},
-    )
-    ds3_gather_for_generation: bool = field(
-        default=True,
-        metadata={
-            "help": "This setting applies to DeepSpeed ZeRO-3. If enabled, the policy model weights are gathered for "
-            "generation, improving generation speed. However, disabling this option allows training models that "
-            "exceed the VRAM capacity of a single GPU, albeit at the cost of slower generation."
-        },
-    )
+    
+    # TODO: Deal with this
+    # ds3_gather_for_generation: bool = field(
+    #     default=True,
+    #     metadata={
+    #         "help": "This setting applies to DeepSpeed ZeRO-3. If enabled, the policy model weights are gathered for "
+    #         "generation, improving generation speed. However, disabling this option allows training models that "
+    #         "exceed the VRAM capacity of a single GPU, albeit at the cost of slower generation."
+    #     },
+    # )
