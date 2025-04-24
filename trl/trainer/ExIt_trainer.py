@@ -26,6 +26,37 @@ from transformers import (
     DataCollatorWithPadding,
     Trainer,
 )
+from transformers.generation.configuration_utils import GenerationConfig
+
+def rejection_sampling_generate_maker(generation_filter, keep_surplus=False):
+    def apprentice_to_generate(apprentice):
+        def generate_surplus(generation_config:GenerationConfig):
+            # May generate a few more completions than requested.
+            if not generation_config.do_sample:
+                raise ValueError("For rejection sampling generation, the generation_config must have do_sample=True")
+            num_return_sequences = generation_config.num_return_sequences
+            legal_generations = []
+            pbar = tqdm(total=num_return_sequences, desc="Generating valid sequences")
+            counter = 1
+            while len(legal_generations) < num_return_sequences:
+                generated_ids = apprentice.generate(generation_config)
+                filtered_generations = generation_filter(generated_ids)
+                legal_generations.extend(filtered_generations)
+                pbar.update(len(filtered_generations))
+                counter += 1
+            pbar.close()
+
+            # Pad sequences to the same length and stack them
+            padded_sequences = pad_sequence(legal_generations, batch_first=True, padding_value=0)
+            return padded_sequences
+
+        def generate(generation_config:GenerationConfig):
+            # Generates exactly the amount requested by discarding some completions.
+            num_returned = generation_config.num_return_sequences
+            return generate_surplus(generation_config)[:num_returned]
+        
+        return generate_surplus if keep_surplus else generate
+    return apprentice_to_generate
 
 
 class RejectionSamplingExpert:
