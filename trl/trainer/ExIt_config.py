@@ -14,11 +14,11 @@
 
 import os
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Optional
 
-from ..trainer.utils import OnPolicyConfig
-from transformers.training_args import TrainingArguments
 from transformers.generation.configuration_utils import GenerationConfig
+from transformers.training_args import TrainingArguments
+
 
 @dataclass
 class ExItConfig(TrainingArguments):
@@ -56,18 +56,16 @@ class ExItConfig(TrainingArguments):
         default=4,
         metadata={"help": "Number of epochs to train, sampling from the expert and training the apprentice."},
     )
-    
+
     expert_generation_config: GenerationConfig = field(
         default_factory=lambda: GenerationConfig(
-            do_sample=True,
-            top_p=0.95,
-            temperature=0.7,
-            max_new_tokens=256,
-            num_return_sequences=8
+            do_sample=True, top_p=0.95, temperature=0.7, max_new_tokens=256, num_return_sequences=8
         ),
-        metadata={"help": "Determines how samples are taken from the expert, and how many are taken per prompt (through num_return_sequences)."},
+        metadata={
+            "help": "Determines how samples are taken from the expert, and how many are taken per prompt (through num_return_sequences)."
+        },
     )
-    
+
     # TODO: Deal with this
     # ds3_gather_for_generation: bool = field(
     #     default=True,
